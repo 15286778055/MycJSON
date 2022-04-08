@@ -33,7 +33,7 @@ public:
     /* value typename */
     typedef MycJSONObject object_type;
     typedef MycJSONObject array_type;
-    typedef string string_type;
+    typedef char* string_type;
     typedef int numberint_type;
     typedef double numberdouble_type;
     typedef bool true_type;
@@ -54,11 +54,11 @@ public:
     } value_type;
 
     /* parse to json object*/
-    char* parse(MycJSONObject* item, const char* value);
-    char* parse_object(MycJSONObject* item, const char* value);
-    char* parse_array(MycJSONObject* item, const char* value);
+    static const char* parse_value(MycJSONObject* item, const char* value);
+    static const char* parse_object(MycJSONObject* item, const char* value);
+    static const char* parse_array(MycJSONObject* item, const char* value);
     static const char* parse_string(MycJSONObject* item, const char* str);
-    char* parse_number(MycJSONObject* item, const char* value);
+    static const char* parse_number(MycJSONObject* item, const char* value);
 
     /* to json string */
     char* toJSONString(MycJSONObject* item);
@@ -87,13 +87,14 @@ private:
     
 };
 
-/* declare some functions */
+/* declare some utility functions */
 static const char* erase_space(const char* value);
+static unsigned parse_hex4(const char* str);
 
 
 
 /* define funcitons belong to MycJSONObject */
-char* MycJSONObject::parse(MycJSONObject* item, const char* value) {
+const char* MycJSONObject::parse_value(MycJSONObject* item, const char* value) {
     
     if (!value) return nullptr; /* 空串 */
     if ('{' == *value) { return parse_object(item, value); }
@@ -108,22 +109,70 @@ char* MycJSONObject::parse(MycJSONObject* item, const char* value) {
 
 }
 
-char* MycJSONObject::parse_object(MycJSONObject* item, const char* value) {
-    item->type = MycJSON_Object;
-    value = erase_space(value);
-    if ('\"' != *value) return nullptr;
-    parse_string(item, value);      /* parse key */
+const char* MycJSONObject::parse_object(MycJSONObject* item, const char* value) {
+    
+    if ('{' != *value) { ep = value; return nullptr; };     /* not an object */
 
-    parse(item, value);     /* parse value */
+    item->type = MycJSON_Object;
+    value = erase_space(value+1);
+    if (*value == '}') return value+1;      /* empty object */
+
+    
+    value = erase_space(parse_string(item, erase_space(value)));
+    if (!value) return 0;
+    item->key = item->value.value_string; item->value.value_string = nullptr;     /* parse key */
+    if (*value != ':') { ep = value; return 0; }
+    value = erase_space(parse_value(item,erase_space(value+1)));        /* parse value */
+    if (!value) return 0; 
 
 
     while (',' == *value) {
-        parse_string(item, value);      /* parse key */
-        parse(item, value);     /* parse value */
+        MycJSONObject* new_item = (MycJSONObject*)MycJSON_malloc(sizeof(MycJSONObject));
+        if (new_item) memset(new_item, 0, sizeof(MycJSONObject));
+        item->next = new_item; new_item->prev = item; item = new_item;
+        value = erase_space(parse_string(item, erase_space(value+1)));
+        if (!value) return 0;
+        item->key = item->value.value_string; item->value.value_string = nullptr;       /* parse key */
+        if (*value != ';') { ep = value; return 0; }
+        value = erase_space(parse_value(item, erase_space(value+1)));       /* parse value */
+        if (!value) return 0;
     }
+
+    if (*value == '}') return value + 1;
+    ep = value;
+    return 0;
 
 }
 
+static unsigned parse_hex4(const char* str) {
+    unsigned h = 0;
+    // 1
+    if (*str >= '0' && *str <= '9') h += (*str) - '0';
+    else if (*str >= 'A' && *str <= 'F') h += 10 + (*str) - 'A';
+    else if (*str >= 'a' && *str <= 'f') h += 10 + (*str) - 'a';
+    else return 0;
+    h = h << 4; ++str;
+    // 2
+    if (*str >= '0' && *str <= '9') h += (*str) - '0';
+    else if (*str >= 'A' && *str <= 'F') h += 10 + (*str) - 'A';
+    else if (*str >= 'a' && *str <= 'f') h += 10 + (*str) - 'a';
+    else return 0;
+    h = h << 4; ++str;
+    // 3
+    if (*str >= '0' && *str <= '9') h += (*str) - '0';
+    else if (*str >= 'A' && *str <= 'F') h += 10 + (*str) - 'A';
+    else if (*str >= 'a' && *str <= 'f') h += 10 + (*str) - 'a';
+    else return 0;
+    h = h << 4; ++str;
+    // 4
+    if (*str >= '0' && *str <= '9') h += (*str) - '0';
+    else if (*str >= 'A' && *str <= 'F') h += 10 + (*str) - 'A';
+    else if (*str >= 'a' && *str <= 'f') h += 10 + (*str) - 'a';
+    else return 0;
+    return h;
+}
+
+static const unsigned char firstByteMark[7] = { 0x00, 0x00, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC };
 const char* MycJSONObject::parse_string(MycJSONObject* item, const char* str) {
     
     if ('\"' != *str) { ep = str; return 0; };      /* not a string */
@@ -133,17 +182,67 @@ const char* MycJSONObject::parse_string(MycJSONObject* item, const char* str) {
     char* out;
     int len = 0;
     unsigned uc, uc2;
+
     while('\"' != *ptr  && *ptr && ++len) if ('\\' == *ptr++) ++ptr; /* skip escaped quotes */
 
-    out = (char*)MycJSON_malloc(len + 1);
+    out = (char*)MycJSON_malloc(len + 1);       /* this is how long we need for the string, roughly */
+    if (!out) return 0;
+
+    ptr = str + 1;
+    ptr2 = out;
+    while ('\"' != *ptr && *ptr) {
+        if ('\\' != *ptr) *ptr2++ = *ptr++;
+        else {      /* escaped quotes need special action*/
+            ++ptr;
+            switch (*ptr) {
+                case 'b': *ptr2++ = '\b'; break;
+                case 'f': *ptr2++ = '\f'; break;
+                case 'n': *ptr2++ = '\n'; break;
+                case 'r': *ptr2++ = '\r'; break;
+                case 't': *ptr2++ = '\t'; break;
+                case 'u': {     /* transcode utf16 to utf8. */
+                    uc = parse_hex4(ptr+1); ptr += 4;       /* get the unicode char */
+
+                    if ((uc >= 0xDC00 && uc <= 0xDFFF) || uc == 0) break;       /* check for invalid */
+
+                    if (uc >= 0xD800 && uc <= 0xDBFF) {
+                        if (ptr[1] != '\\' || ptr[2] != 'u') break;
+                        uc2 = parse_hex4(ptr+3); ptr += 6;
+                        if (uc < 0xDc00 || uc > 0xDFFF) uc = 0x10000 + (((uc&0x3FF)<<10) | (uc2&0x3FF));
+                    }
+
+                    len = 4;
+                    if (uc<0x80) len=1;
+                    else if (uc < 0x800) len = 2;
+                    else if (uc < 0x10000) len = 3;
+                    ptr2 += len;
+
+                    switch (len) {
+                        case 4: *--ptr2 = ((uc | 0x80) & 0xBF); uc >>= 6;
+                        case 3: *--ptr2 = ((uc | 0x80) & 0xBF); uc >>= 6;
+                        case 2: *--ptr2 = ((uc | 0x80) & 0xBF); uc >>= 6;
+                        case 1: *--ptr2 = (uc | firstByteMark[len]);
+                    }
+                    ptr2 += len;
+                    break;
+                }
+                default: *ptr2++ = *ptr; break;
+            }
+        }
+        ++ptr;
+    }
+    *ptr2 = 0;
+    if (*ptr == '\"') ++ptr;
+    item->value.value_string = out;
+    item->type = MycJSON_String;
+    return ptr;
+}
+
+const char* MycJSONObject::parse_number(MycJSONObject* item, const char* value) {
 
 }
 
-char* MycJSONObject::parse_number(MycJSONObject* item, const char* value) {
-
-}
-
-char* MycJSONObject::parse_array(MycJSONObject* item, const char* value) {
+const char* MycJSONObject::parse_array(MycJSONObject* item, const char* value) {
 
 }
 

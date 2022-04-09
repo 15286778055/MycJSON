@@ -12,11 +12,11 @@ namespace __MyCJSON__ {
 /* MycJSON value types */
 #define MycJSON_Object 0
 #define MycJSON_Array 1
-#define MycJSON_String 2;
-#define MycJSON_Number 3;
-#define MycJSON_True 4;
-#define MycJSON_False 5;
-#define MycCJON_Null 6;
+#define MycJSON_String 2
+#define MycJSON_Number 3
+#define MycJSON_True 4
+#define MycJSON_False 5
+#define MycJSON_Null 6
 
 /* a flag pointer to error */
 static const char* ep;
@@ -24,6 +24,12 @@ static const char* ep;
 /* memory manage */
 static void* (*MycJSON_malloc)(size_t sz) = malloc;
 static void (*MycJSON_free)(void* ptr) = free;
+
+typedef struct {
+    char* buffer;
+    int length;
+    int offset;
+} printbuffer;
 
 
 /* MycJSON Object 对象 */
@@ -61,7 +67,13 @@ public:
     static const char* parse_number(MycJSONObject* item, const char* value);
 
     /* to json string */
-    char* toJSONString(MycJSONObject* item);
+    char* Print(MycJSONObject* item);
+    static char* print_value(MycJSONObject* item, int depth, int fmt, printbuffer* p);
+    static char* print_object(MycJSONObject* item, int depth, int fmt, printbuffer* p);
+    static char* print_string(MycJSONObject* item, printbuffer* p);
+    static char* print_string_ptr(const char* str, printbuffer* p);
+    static char* ensure(printbuffer* p, int needed);
+
 
     /* construcotr destructor */
     // MycJSONObject() {}
@@ -100,10 +112,10 @@ const char* MycJSONObject::parse_value(MycJSONObject* item, const char* value) {
     if ('{' == *value) { return parse_object(item, value); }
     if ('[' == *value) { return parse_array(item, value); }
     if ('-' == *value || ('0' <= *value && '9' >= *value)) { return parse_number(item, value); }
-    if ('\"' == *value) {}
-    if (!strncmp(value, "true", 4)) {}
-    if (!strncmp(value, "false", 5)) {}
-    if (!strncmp(value, "null", 4)) {}
+    if ('\"' == *value) { return parse_string(item, value); }
+    if (!strncmp(value, "true", 4)) { item->type = MycJSON_True; item->value.value_int = 1; return value + 4; }
+    if (!strncmp(value, "false", 5)) { item->type = MycJSON_False; return value + 5; }
+    if (!strncmp(value, "null", 4)) { item->type = MycJSON_Null; return value + 4;}
     
     //
 
@@ -117,24 +129,26 @@ const char* MycJSONObject::parse_object(MycJSONObject* item, const char* value) 
     value = erase_space(value+1);
     if (*value == '}') return value+1;      /* empty object */
 
-    
-    value = erase_space(parse_string(item, erase_space(value)));
+    MycJSONObject* child = (MycJSONObject*)MycJSON_malloc(sizeof(MycJSONObject));
+    item->value.value_object = child;
+    if (!item->value.value_object) return 0;
+    value = erase_space(parse_string(child, erase_space(value)));
     if (!value) return 0;
-    item->key = item->value.value_string; item->value.value_string = nullptr;     /* parse key */
+    child->key = child->value.value_string; child->value.value_string = nullptr;     /* parse key */
     if (*value != ':') { ep = value; return 0; }
-    value = erase_space(parse_value(item,erase_space(value+1)));        /* parse value */
-    if (!value) return 0; 
+    value = erase_space(parse_value(child,erase_space(value+1)));        /* parse value */
+    if (!value) return 0;
 
 
     while (',' == *value) {
         MycJSONObject* new_item = (MycJSONObject*)MycJSON_malloc(sizeof(MycJSONObject));
         if (new_item) memset(new_item, 0, sizeof(MycJSONObject));
-        item->next = new_item; new_item->prev = item; item = new_item;
-        value = erase_space(parse_string(item, erase_space(value+1)));
+        child->next = new_item; new_item->prev = child; child = new_item;
+        value = erase_space(parse_string(child, erase_space(value+1)));
         if (!value) return 0;
-        item->key = item->value.value_string; item->value.value_string = nullptr;       /* parse key */
+        child->key = child->value.value_string; child->value.value_string = nullptr;       /* parse key */
         if (*value != ';') { ep = value; return 0; }
-        value = erase_space(parse_value(item, erase_space(value+1)));       /* parse value */
+        value = erase_space(parse_value(child, erase_space(value+1)));       /* parse value */
         if (!value) return 0;
     }
 
@@ -247,16 +261,93 @@ const char* MycJSONObject::parse_array(MycJSONObject* item, const char* value) {
 }
 
 
-char* MycJSONObject::toJSONString(MycJSONObject* item) {
-    
-}
-
-
 /* Utility to jump whitespace and cl/lr */
 static const char* erase_space(const char* value) {
     /* 0 ~ 31 为控制字符（非打印），32 为 空格 */
     while (value && *value && 32 >= (unsigned char)*value) ++value;
     return value;
+}
+
+
+/* functions to translate object to stirng */
+
+/* translate for value */
+char* MycJSONObject::print_value(MycJSONObject* item, int depth, int fmt, printbuffer* p) {
+    char* out = nullptr;
+    if (!item) return 0;
+    if (p) {
+        switch ((item->type) & 255) {
+            case MycJSON_Object: out = print_object(item, depth, fmt, p); break;
+            case MycJSON_String: out = print_string(item, p); break;
+        }
+    } else {
+        switch ((item->type) & 255) {
+            case MycJSON_Object: out = print_object(item, depth, fmt, 0); break;
+            // case MycJSON_Array: break;
+            case MycJSON_String: out = print_string(item, 0); break;
+            // case MycJSON_Number: break;
+            // case MycJSON_True: break;
+            // case MycJSON_False: break;
+            // case MycJSON_Null: break;
+        }
+    }
+    return out;
+}
+
+/* translate for object */
+char* MycJSONObject::print_object(MycJSONObject* item, int depth, int fmt, printbuffer* p) {
+    char **entries = 0, **names = 0;
+    char *out = 0, *ptr, *ret, *str;
+    int len = 7, i = 0, j;
+    MycJSONObject *child = item->value.value_object;
+    int numentries = 0, fail = 0;
+    size_t tmplen = 0;
+    /* cout the number of entries */
+    while (child) {
+        numentries++;
+        child = child->value.value_object;
+    }
+    /* explicitly handle empty object case */
+    if (!numentries) {
+        if (p) out = ensure(p, fmt ? depth+4 : 3);
+        else out = (char *)MycJSON_malloc(fmt ? depth+4 : 3);
+        if (!out) return 0;
+        ptr = out; *ptr++ = '{';
+        if (fmt) {
+            *ptr++='\n';
+            for (i=0; i < depth-1; ++i) *ptr++ = '\t';
+        }
+        *ptr++ = '}'; *ptr++ = 0;
+        return out;
+    }
+    if (p) {
+
+    } else {
+        /**/
+        entries = 
+    }
+    return out;
+}
+
+/* translate for string */
+char* MycJSONObject::print_string(MycJSONObject* item, printbuffer* p) { return print_string_ptr(item->value.value_string, p); }
+
+char* MycJSONObject::print_string_ptr(const char* str, printbuffer* p) {
+    const char* ptr;
+    char* ptr2;
+    char* out;
+    int len = 0;
+    int flag = 0;
+    unsigned char token;
+    for (ptr=str; *ptr; ++ptr) flag |= ((*ptr>0 && *ptr<32) || (*ptr == '\"') || (*ptr == '\\')) ? 1 : 0;
+    if (!flag) {
+        len = ptr - str;
+        if (p) out = 
+    }
+}
+
+char* MycJSONObject::ensure(printbuffer* p, int needed) {
+    char* 
 }
 
 

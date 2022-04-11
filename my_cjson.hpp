@@ -47,7 +47,7 @@ public:
     typedef char null_type;
 
     /* 键值的类型别名 */
-    typedef string key_type;
+    typedef char *key_type;
     typedef union value_type {
         object_type* value_object;
         array_type* value_array;
@@ -87,7 +87,7 @@ public:
     // }
 
 
-private:
+public:
     
     /* member data */
     int type; /* The type of the item */
@@ -468,7 +468,7 @@ char* MycJSONObject::print_string_ptr(const char* str, printbuffer* p) {
                 case '\b': *ptr2++ = 'b'; break;
                 case '\f': *ptr2++ = 'f'; break;
                 case '\n': *ptr2++ = 'n'; break;
-                case '\r': *ptr2++ = 'r"'; break;
+                case '\r': *ptr2++ = 'r'; break;
                 case '\t': *ptr2++ = 't'; break;
                 default: sprintf(ptr2, "u%04x", token); ptr2 += 5; break;
             }
@@ -494,14 +494,14 @@ char* MycJSONObject::ensure(printbuffer* p, int needed) {
     return newbuffer + p->offset;
 }
 
-static int update(printbuffer *p) {
+int MycJSONObject::update(printbuffer *p) {
     char *str;
     if (!p || !p->buffer) return 0;
     str = p->buffer + p->offset;
     return p->offset + strlen(str);
 }
 
-static int pow2gt (int x) {	--x;	x|=x>>1;	x|=x>>2;	x|=x>>4;	x|=x>>8;	x|=x>>16;	return x+1;	}
+int MycJSONObject::pow2gt (int x) {	--x;	x|=x>>1;	x|=x>>2;	x|=x>>4;	x|=x>>8;	x|=x>>16;	return x+1;	}
 
 
 

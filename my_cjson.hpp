@@ -73,6 +73,8 @@ public:
     static char* print_string(MycJSONObject* item, printbuffer* p);
     static char* print_string_ptr(const char* str, printbuffer* p);
     static char* ensure(printbuffer* p, int needed);
+    static int update(printbuffer *p);
+    static int pow2gt (int x);
 
 
     /* construcotr destructor */
@@ -96,6 +98,8 @@ private:
     MycJSONObject* next;
     MycJSONObject* prev;
     // MycJSONObject* child;
+
+    char *string;       /* the item's name string */
     
 };
 
@@ -305,7 +309,7 @@ char* MycJSONObject::print_object(MycJSONObject* item, int depth, int fmt, print
     /* cout the number of entries */
     while (child) {
         numentries++;
-        child = child->value.value_object;
+        child = child->next;
     }
     /* explicitly handle empty object case */
     if (!numentries) {
@@ -321,10 +325,89 @@ char* MycJSONObject::print_object(MycJSONObject* item, int depth, int fmt, print
         return out;
     }
     if (p) {
+        /* coompose the output */
+        i = p->offset;
+        len = fmt?2:1; ptr = ensure(p, len+1); if(!ptr) return 0;
+        *ptr++ = '{'; if (fmt) *ptr++ = '\n'; *ptr = 0; p->offset += len;
+        child = item->value.value_object; ++depth;
+        while (child) {
+            if (fmt) {
+                ptr = ensure(p, depth); if(!ptr) return 0;
+                for (j = 0; j < depth; ++j) {
+                    *ptr++ = '\t';
+                }
+                p->offset += depth;
+            }
+            print_string_ptr(child->value.value_string, p);     /* parse key */
+            p->offset = update(p);
 
+            len = fmt ? 2 : 1;
+            ptr = ensure(p, len);
+            if (fmt) *ptr++ = '\t';
+            p->offset += len;
+
+            print_value(child, depth, fmt, p);      /* parse value */
+            p->offset = update(p);
+
+            len = (fmt?1:0) + (child->next?1:0);
+            ptr = ensure(p, len+1); if(!ptr) return 0;
+            if (child->next) *ptr++ = ',';
+            if (fmt) *ptr++ = '\n'; *ptr = 0;
+            p->offset += len;
+            child = child->next;
+        }
+        ptr = ensure(p, fmt?(depth+1):2); if (!ptr) return 0;
+        if (fmt) for (i = 0; i < depth - 1; ++i) *ptr++ = '\t';
+        *ptr++ = '}'; *ptr = 0;
+        out = (p->buffer)+i;
     } else {
-        /**/
-        entries = 
+        /* allocate space for the names and the objects */
+        entries = (char **)MycJSON_malloc(numentries * sizeof(char *));
+        if (!entries) return 0;
+        names = (char **) MycJSON_malloc(numentries * sizeof(char *));
+        if (!names) return 0;
+        memset(entries, 0, sizeof(char *) * numentries);
+        memset(names, 0, sizeof(char *) * numentries);
+
+        /* collect all the results into our arrays: */
+        child = item->value.value_object; ++depth; if (fmt) len += depth;
+        while (child)
+        {
+            names[i] = str = print_string_ptr(child->string, 0);
+            entries[i++] = ret = print_value(child, depth, fmt, 0);
+            if (str && ret) len += strlen(ret) + strlen(str) + 2 + (fmt?2+depth:0); else fail = 1;
+        }
+
+        /* try to allocate the output string */
+        if (!fail) out = (char*)MycJSON_malloc(len);
+        if (!out) fail = 1;
+
+        /* handle failure */
+        if (fail) {
+            for (i = 0; i < numentries; ++i) {
+                if (names[i]) MycJSON_free(names[i]);
+                if (entries[i]) MycJSON_free(entries[i]);
+            }
+            MycJSON_free(names);
+            MycJSON_free(entries);
+            return 0;
+        }
+
+        /* compose the output */
+        *out = '{'; ptr = out + 1; if (fmt) *ptr++ = '\n'; *ptr = 0;
+        for (i = 0; i < numentries; ++i) {
+            if (fmt) for (j = 0; j < depth; j++) *ptr++ = '\t';
+            tmplen = strlen(names[i]); memcpy(ptr, names[i], tmplen); ptr += tmplen;
+            *ptr++ = ':'; if (fmt) *ptr++ = '\t';
+            strcpy(ptr, entries[i]); ptr += strlen(entries[i]);
+            if (i != numentries - 1) *ptr++ = ',';
+            if (fmt) *ptr++ = '\n'; *ptr = 0;
+            MycJSON_free(names[i]); MycJSON_free(entries[i]);
+        }
+
+        MycJSON_free(names); MycJSON_free(entries);
+        if (fmt) for (i = 0; i < depth - 1; ++i) *ptr++ = '\t';
+        *ptr++ = '}'; *ptr++ = 0;
     }
     return out;
 }
@@ -339,16 +422,86 @@ char* MycJSONObject::print_string_ptr(const char* str, printbuffer* p) {
     int len = 0;
     int flag = 0;
     unsigned char token;
+
     for (ptr=str; *ptr; ++ptr) flag |= ((*ptr>0 && *ptr<32) || (*ptr == '\"') || (*ptr == '\\')) ? 1 : 0;
-    if (!flag) {
+    if (!flag) {        /* have no no-printable character */
         len = ptr - str;
-        if (p) out = 
+        if (p) out = ensure(p, len+3);      /* 3 means quotes and terminate character */
+        else out = (char *)MycJSON_malloc(len+3);
+        if (!out) return 0;
+        ptr2 = out; *ptr2++ = '\"';
+        strcpy(ptr2, str);
+        ptr2[len] = '\"';
+        ptr2[len+1] = 0;
+        return out;
     }
+
+    if (!str) {     /* str has no strings */
+        if (p) out = ensure(p, 3);
+        else out = (char *)MycJSON_malloc(3);
+        if (!out) return 0;
+        strcpy(out, "\"\"");
+        return out;
+    }
+
+    /* str has no-printable characters */
+    ptr = str;
+    while ((token=*ptr) && ++len) {     /* count the length of no-printable string */
+        if (strchr(("\"\\\b\f\n\r\t"), token)) len++;
+        else if (token < 32) len += 5;
+        ptr++;
+    }
+
+    if (p) out = ensure(p, len+3);
+    else out = (char *)MycJSON_malloc(len+3);
+    if (!out) return 0;
+
+    ptr2 = out; ptr = str;
+    *ptr2++ = '\"';
+    while (*ptr) {
+        if ((unsigned char)*ptr>31 && *ptr!='\"' && *ptr!='\\') *ptr2++ = *ptr++;
+        else {
+            *ptr2++ = '\\';
+            switch (token = *ptr++) {
+                case '\\': *ptr2++ = '\\'; break;
+                case '\"': *ptr2++ = '\"'; break;
+                case '\b': *ptr2++ = 'b'; break;
+                case '\f': *ptr2++ = 'f'; break;
+                case '\n': *ptr2++ = 'n'; break;
+                case '\r': *ptr2++ = 'r"'; break;
+                case '\t': *ptr2++ = 't'; break;
+                default: sprintf(ptr2, "u%04x", token); ptr2 += 5; break;
+            }
+        }
+    }
+    *ptr2++ = '\"'; *ptr2++ = 0;
+    return out;
 }
 
 char* MycJSONObject::ensure(printbuffer* p, int needed) {
-    char* 
+    char *newbuffer; int newsize;
+    if (!p || !p->buffer) return 0;
+    needed += p->offset;
+    if (needed <= p->length) return p->buffer + p->offset;
+
+    newsize = pow2gt(needed);
+    newbuffer = (char *)MycJSON_malloc(newsize);
+    if (!newbuffer) { MycJSON_free(p->buffer); p->length = 0; p->buffer = 0; return 0; }
+    if (newbuffer) memcpy(newbuffer, p->buffer, p->length);
+    MycJSON_free(p->buffer);
+    p->length = newsize;
+    p->buffer = newbuffer;
+    return newbuffer + p->offset;
 }
+
+static int update(printbuffer *p) {
+    char *str;
+    if (!p || !p->buffer) return 0;
+    str = p->buffer + p->offset;
+    return p->offset + strlen(str);
+}
+
+static int pow2gt (int x) {	--x;	x|=x>>1;	x|=x>>2;	x|=x>>4;	x|=x>>8;	x|=x>>16;	return x+1;	}
 
 
 
